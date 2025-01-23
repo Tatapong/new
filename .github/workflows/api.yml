@@ -1,0 +1,85 @@
+name: Fast-API CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  dockerhub_id: tatapong
+  dockerhub_repository: dst-fastapi
+  dockerhub_latest: latest
+
+jobs:
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Test python Code
+        run: | 
+          pip3 install -r requirements.txt 
+          pip install --upgrade fastapi starlette
+          cd app/
+          pytest        
+
+  build-push-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build the Docker image
+        run: |
+          # Build the Docker image with a commit-specific tag
+          docker build -t $dockerhub_id/$dockerhub_repository:${GITHUB_SHA} .
+          # Tag the image with the "latest" tag
+          docker tag $dockerhub_id/$dockerhub_repository:${GITHUB_SHA} $dockerhub_id/$dockerhub_repository:$dockerhub_latest
+          # Display the Docker images available locally
+          docker images
+
+          # Run the Docker image locally for testing
+          
+          docker run -d -p 8080:80 --name $dockerhub_repository $dockerhub_id/$dockerhub_repository:${GITHUB_SHA}
+          sleep 10  # Give the container time to start
+
+          # Verify the container is running
+          docker ps
+
+          # Test the image by hitting the localhost endpoint
+          sleep 5
+
+          # Docker login using GitHub secrets (non-interactive)
+          echo ${{ secrets.DOCKER_PASSWORD }} | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
+          
+          # Push the images to Docker Hub
+          docker push $dockerhub_id/$dockerhub_repository:${GITHUB_SHA}
+          docker push $dockerhub_id/$dockerhub_repository:$dockerhub_latest
+
+  deploy:
+    needs: build-push-container
+    name: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: executing remote ssh commands using password
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.HOSTNAME }}
+          username: ${{ secrets.USER_NAME }}
+          key: ${{ secrets.AWS_PRIVATE_KEY }}
+          port: 22
+          script: |
+            # Remove the previous container
+            sudo docker rm -f fastapi
+            # Remove the previous Docker image
+            sudo docker rmi tatapong/dst-fastapi:latest
+            sleep 10
+            # Run the new container with the updated image
+            sudo docker run -d -p 9000:80 --name fastapi tatapong/dst-fastapi:latest
+            sudo docker ps
+            sleep 10
+            # Test the image by hitting the localhost endpoint
+            curl localhost:9000
+            # List files in the current directory
+            ls
+            # List the Docker images
+            sudo docker images
